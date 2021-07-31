@@ -6,7 +6,6 @@ const client = new Discord.Client();
 const MUSIXMATCHKEY = "83ff4ead3ace8c3aa2deb86f310ea93f"
 const prefix = "%"
 const https = require('https')
-var request = require('request');
 const EventEmitter = require('events');
 const musixmatch = "https://api.musixmatch.com/ws/1.1/"
 const ytdl = require( "ytdl-core" );
@@ -24,6 +23,9 @@ const states = {
 }
 
 let trackQuery = "";
+let tracks = [];
+let playing = false;
+
 
 let state = states.DEFAULT
 
@@ -31,7 +33,7 @@ function httpRequest( params, requestType, callback )
 {
     let keys = Object.keys( params )
     let paramUrl = "?format=json&";
-
+    
     keys.forEach( e => {
         paramUrl += e + "=" + encodeURIComponent( params[ e ] ) + "&"
     })
@@ -167,18 +169,43 @@ const commands =
     play:
     {
         description: "Plays the last selected song in a voice channel",
+        // adds the selected track to the queue and plays the next track automatically
         func: async ( message ) => {
             if (message.member.voice.channel) {
-                const connection = await message.member.voice.channel.join();
+                global.connection = await message.member.voice.channel.join();
                 if( !trackQuery )
                 {
                     message.reply( "No track is selected" )
                     return
                 }
-                message.reply( "Playing " + trackQuery ) 
+                message.reply( "Adding **" + trackQuery + "** to the queue..." ) 
                 const videos = await ytsearch( trackQuery )                
-                const stream = ytdl( videos.videos[0].url, { filter: "audioonly" } );
-                global.dispatcher = connection.play( stream, { seek: 0, volume: 1} );
+                const stream = { audio: ytdl( videos.videos[0].url, { filter: "audioonly" } ), title: trackQuery }
+                tracks.push( stream );
+
+                // if not playing anything, start playing the first track
+                if( !playing )
+                {
+                    message.channel.send( ":musical_note: Now Playing **" + trackQuery + "**... :musical_note: " )
+                    global.dispatcher = connection.play( tracks[0].audio, { seek: 0, volume: 1} );
+                    playing = true;
+                }
+                
+                global.dispatcher.on( 'finish', async () => {
+                    if( tracks.length > 0 )
+                    {
+                        message.channel.send( "Now Playing **" + tracks[0].title + "**..." )
+                        global.dispatcher = connection.play( tracks[0].audio, { seek: 0, volume: 1} );
+                        playing = true;
+                    }
+                    else
+                    {
+                        message.channel.send( "No more tracks in the queue, leaving voice channel" );
+                        if( message.member.voice.channel )
+                            global.connection = await message.member.voice.channel.leave();
+                        playing = false;
+                    }
+                });      
             }
             else
             {
@@ -186,31 +213,87 @@ const commands =
             }
         }
     },
+
+    // plays the next track in the queue
+    skip:
+    {
+        description: "Skips the current song",
+        func: async ( message ) => {
+            if( playing )
+            {
+                tracks.shift();
+                if( tracks.length > 0 )
+                {
+                    global.dispatcher = global.connection.play( tracks[0].audio, { seek: 0, volume: 1} );
+                    message.channel.send( "Skipping... Now Playing **" + tracks[0].title + "**");
+                    playing = true;
+                }
+                else
+                {
+                    message.channel.send( "No more tracks in the queue, leaving voice channel" );
+                    if( message.member.voice.channel )
+                        global.connection = await message.member.voice.channel.leave();
+                    playing = false;
+                }
+            }
+        }
+    },
+
+    // pauses the current song
     pause:
     {
-        func: (message) => {
+        description: "Pauses the audio stream",
+        func: ( message ) => {
             global.dispatcher.pause();
         }
     },
+
+    // resumes the current song
     resume:
     {
+        description: "Resumes the audio stream",
         func: (message) => {
             global.dispatcher.resume();
         }
     },
+
+    // bot leaves voice channel
     stop: 
     {
+        description: "Stops audio and leaves the voice channel",
         func: async ( message ) => {
             if (message.member.voice.channel) {
                 const connection = await message.member.voice.channel.leave();
                 message.reply( "Stopping audio stream.." );
             }
         }
+    },
+
+    // lists all tracks in the queue
+    queue:
+    {
+        description: "Lists all the songs in the queue",
+        // list all the tracks in the queue
+        func: async ( message ) => {
+            if( !tracks.length )
+            {
+                message.reply( "The queue is empty" );
+            }
+            else
+            {
+                let msg = "Queue:";
+                tracks.forEach( (track, index) => {
+                    msg += "\n\n"+ (index + 1) + ". **" + track.title + "**"
+                })
+                message.reply( msg );
+            }
+        }
     }
+
 }
 
 //event listeners
-client.once( "ready", () => {
+client.once( "ready", () => {   
     console.log( 'ready' );
 })
 client.once( "reconnecting", () => {
@@ -220,7 +303,7 @@ client.once( "disconnect", () => {
     console.log( "disconnected" );
 })
 
-//when message is sent
+//when message is sent 
 client.on( "message", async (message) => {
     if( !message.content.startsWith( prefix ) || message.author.bot ) 
     {
